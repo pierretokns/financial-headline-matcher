@@ -12,7 +12,7 @@ PUBLISHER_SUFFIX = re.compile(
 TOKEN = re.compile(r'[^\W_]+')
 SUFFIXES = {'inc', 'incorporated', 'corp', 'corporation', 'ltd', 'limited',
             'plc', 'llc', 'company', 'co'}
-RULE_VERSION = 'issuer-frame-v8'
+RULE_VERSION = 'issuer-frame-v9'
 
 
 def tokenize(text):
@@ -277,7 +277,7 @@ def acquisitions(text, spans):
 
 
 def adjacent(text, start, end):
-    return bool(re.fullmatch(r"[\s'’:,\-]*(?:s\s*)?", text[start:end], re.I))
+    return bool(re.fullmatch(r"[\s'‘’“”\":,\-]*(?:s\s*)?", text[start:end], re.I))
 
 
 def directional_passive(action):
@@ -292,9 +292,13 @@ def event_frames(text, spans, broker_ids):
         after = next((s for s in spans if s.start >= trigger.end()), None)
         if not before or not after or after.start - before.end > 100:
             continue
-        if not adjacent(text, before.end, trigger.start()):
-            continue
         action = trigger[0].lower()
+        issuer_gap = text[before.end:trigger.start()]
+        possessive_security = directional_passive(action) and re.fullmatch(
+            r"\.?['’]s\s+(?:shares|stock)\s+", issuer_gap, re.I,
+        )
+        if not adjacent(text, before.end, trigger.start()) and not possessive_security:
+            continue
         target_gap = PRICE_TARGET_GAP.fullmatch(text[trigger.end():after.start])
         if broker_ids.intersection(before.evidence_ids) and (
             adjacent(text, trigger.end(), after.start) or (action in PRICE_TARGET_ACTIONS and target_gap)
@@ -311,7 +315,7 @@ def event_frames(text, spans, broker_ids):
             if action in PRICE_TARGET_ACTIONS and not (target_gap or re.search(PRICE_TARGET, context, re.I)):
                 continue
             tail = text[targets[-1].end:]
-            bare_target = DATELINE.sub('', tail, count=1).strip(' .') == ''
+            bare_target = DATELINE.sub('', tail, count=1).strip(" .'\"’”") == ''
             coverage = re.fullmatch(COVERAGE_ACTION, action, re.I)
             if (len(targets) > 1 or coverage or target_gap or (directional and bare_target)
                     or RATING_CONTEXT.search(context)):

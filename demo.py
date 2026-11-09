@@ -1,6 +1,6 @@
 import json
 
-from headline_matcher import AliasIndex, extract, mask_headline
+from headline_matcher import AliasIndex, extract, mask_headline, name_aliases
 
 aliases = [
     {'alias': 'Northbridge Research', 'evidence_id': 'broker:1'},
@@ -48,3 +48,45 @@ for headline, field, values in (
 ):
     event = extract({'news_id': 'structured', 'headline': headline}, index, broker_ids)['events'][0]
     assert event[field] == values, event
+
+def check_aliases_and_apostrophes():
+    index = AliasIndex([
+        {'alias': alias, 'evidence_id': 'auto'}
+        for alias in (*name_aliases("O'Reilly Automotive Inc."), "O'Reilly Auto Parts")
+    ] + [
+        {'alias': 'Harbor Devices', 'evidence_id': 'devices'},
+        {'alias': 'Harbor Devices Holdings', 'evidence_id': 'holdings'},
+        {'alias': 'Harbor Devices Holdings', 'evidence_id': 'collision'},
+        {'alias': "Fisher's Capital Research", 'evidence_id': 'broker'},
+    ])
+    brokers = {'broker'}
+    for headline, issuer in (
+        ("Fisher’s Capital Research upgrades O'Reilly Auto Parts", "O'Reilly Auto Parts"),
+        ("Fisher's Capital Research downgrades ‘O’Reilly Automotive’", 'O’Reilly Automotive'),
+        ("O’Reilly Automotive Inc.’s shares downgraded by Fisher's Capital Research", None),
+        ("O’Reilly Automotive’s EPS $1.12 vs. $1.04 est.", None),
+    ):
+        result = extract({'news_id': 'alias', 'headline': headline}, index, brokers)
+        mentions = result['headline_mentions']
+        assert any(row['evidence_ids'] == ('auto',) for row in mentions), result
+        for row in mentions:
+            assert headline[row['start']:row['end']] == row['text']
+        if issuer:
+            roles = result['events'][0]['roles']
+            assert [(row['role'], row['text']) for row in roles] == [
+                ('broker', mentions[0]['text']), ('affected_issuer', issuer)
+            ], roles
+        if 'shares downgraded' in headline:
+            assert [role['role'] for role in result['events'][0]['roles']] == ['broker', 'affected_issuer']
+        if 'EPS' in headline:
+            assert result['events'][0]['comparisons'][0]['consensus'] == '$1.04', result
+
+    headline = 'Harbor Devices Holdings and Harbor Devices'
+    mentions = extract({'news_id': 'collision', 'headline': headline}, index, brokers)['headline_mentions']
+    assert [(row['text'], row['evidence_ids']) for row in mentions] == [
+        ('Harbor Devices Holdings', ('collision', 'holdings')),
+        ('Harbor Devices', ('devices',)),
+    ]
+
+
+check_aliases_and_apostrophes()
