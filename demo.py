@@ -90,3 +90,14 @@ def check_aliases_and_apostrophes():
 
 
 check_aliases_and_apostrophes()
+
+assert 'Aena' in name_aliases('Aena, S.M.E., S.A.')
+assert 'Eurogroup Laminations' in name_aliases('Eurogroup Laminations S.p.A.')
+international = AliasIndex([
+    {'alias': 'Meliá Hotels', 'evidence_id': 'hotel'},
+    {'alias': 'Marks & Spencer', 'evidence_id': 'retail'},
+])
+international_headline = 'Melia\u0301 Hotels and Marks and Spencer'
+assert [international_headline[span.start:span.end] for span in international.find(international_headline)] == [
+    'Melia\u0301 Hotels', 'Marks and Spencer',
+]

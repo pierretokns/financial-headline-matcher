@@ -9,14 +9,19 @@ PUBLISHER_SUFFIX = re.compile(
     r'\s+[|–—-]\s+(?:the new york times|new york times|thomson reuters|reuters)\s*$',
     re.I,
 )
-TOKEN = re.compile(r'[^\W_]+')
-SUFFIXES = {'inc', 'incorporated', 'corp', 'corporation', 'ltd', 'limited',
-            'plc', 'llc', 'company', 'co'}
-RULE_VERSION = 'issuer-frame-v9'
+TOKEN = re.compile(r'[^\W_]+(?:[\u0300-\u036f]+[^\W_]*)*|&')
+SUFFIXES = (
+    ('s', 'm', 'e', 's', 'a'), ('s', 'p', 'a'), ('s', 'a', 'u'),
+    ('s', 'a', 's'), ('s', 'a', 'r', 'l'), ('s', 'a'),
+    *((word,) for word in ('inc', 'incorporated', 'corp', 'corporation', 'ltd',
+                           'limited', 'plc', 'llc', 'company', 'co', 'spa', 'sau',
+                           'sa', 'sas', 'sarl', 'ag', 'se', 'gmbh', 'nv', 'bv', 'ab', 'asa')),
+)
+RULE_VERSION = 'issuer-frame-v10'
 
 
 def tokenize(text):
-    return [(unicodedata.normalize('NFKC', token[0]).casefold(), token.start(), token.end())
+    return [('and' if token[0] == '&' else unicodedata.normalize('NFKC', token[0]).casefold(), token.start(), token.end())
             for token in TOKEN.finditer(text)]
 
 
@@ -79,9 +84,14 @@ def name_aliases(name):
     if not tokens:
         return set()
     aliases = {name}
-    while len(tokens) > 2 and tokens[-1][0] in SUFFIXES:
-        tokens.pop()
-    aliases.add(name[:tokens[-1][2]])
+    words = tuple(token[0] for token in tokens)
+    while words:
+        suffix = next((candidate for candidate in SUFFIXES
+                       if len(words) > len(candidate) and words[-len(candidate):] == candidate), None)
+        if suffix is None:
+            break
+        words = words[:-len(suffix)]
+    aliases.add(name[:tokens[len(words)-1][2]])
     return aliases
 
 
