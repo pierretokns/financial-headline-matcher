@@ -26,3 +26,25 @@ for number, (headline, expected) in enumerate(examples, 1):
     assert expected in {event['frame'] for event in result['events']}
     result['masked_headline'] = mask_headline(headline, result['headline_mentions'], broker_ids)
     print(json.dumps(result, ensure_ascii=False))
+
+for headline in (
+    'Northbridge Research upgrades Example Robotics - Reuters',
+    'Northbridge Research double-downgrades Harbor Devices',
+    'Northbridge Research resumes coverage of Harbor Devices',
+):
+    assert extract({'news_id': 'new', 'headline': headline}, index, broker_ids)['events'][0]['frame'] == 'analyst_action'
+
+headline = 'Northbridge Research upgrades Example Robotics software; stock jumps'
+assert not extract({'news_id': 'negative', 'headline': headline}, index, broker_ids)['events']
+
+for headline, field, values in (
+    ('Northbridge Research cuts its target on Harbor Devices to $42 from $50',
+     'price_target', {'old': '$50', 'new': '$42'}),
+    ('Northbridge Research upgrades Harbor Devices from Hold to Buy',
+     'rating', {'old': 'Hold', 'new': 'Buy'}),
+    ('Example Robotics Q3 adjusted EPS $1.12 vs. $1.04 est.', 'comparisons',
+     [{'basis': 'adjusted', 'metric': 'EPS', 'actual': '$1.12',
+       'consensus': '$1.04', 'fiscal_period': 'Q3'}]),
+):
+    event = extract({'news_id': 'structured', 'headline': headline}, index, broker_ids)['events'][0]
+    assert event[field] == values, event

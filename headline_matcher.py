@@ -12,7 +12,7 @@ PUBLISHER_SUFFIX = re.compile(
 TOKEN = re.compile(r'[^\W_]+')
 SUFFIXES = {'inc', 'incorporated', 'corp', 'corporation', 'ltd', 'limited',
             'plc', 'llc', 'company', 'co'}
-RULE_VERSION = 'issuer-frame-v7'
+RULE_VERSION = 'issuer-frame-v8'
 
 
 def tokenize(text):
@@ -98,16 +98,18 @@ ACQUIRED_BY = re.compile(
     r'(?:acquired|bought|purchased)|(?:has )?(?:agreed|entered into an agreement) to be acquired)'
     r' by\s*', re.I,
 )
+DIRECTIONAL_RATING = r'(?:double[-\s])?(?:upgrad(?:e[sd]?)|downgrad(?:e[sd]?))'
+DIRECTIONAL_RATING_PATTERN = re.compile(DIRECTIONAL_RATING, re.I)
+COVERAGE_ACTION = r'(?:initiates|starts|resumes|reinstates) coverage(?: (?:of|on))?'
 RATINGS = re.compile(
-    r'\b(?:upgrades?|downgrades?|upgraded|downgraded|initiates(?: coverage (?:of|on))?|'
-    r'reiterates|maintains|raises|cuts|lowers|lifts)\b', re.I,
+    rf'\b(?:{DIRECTIONAL_RATING}|{COVERAGE_ACTION}|initiates|reiterates|maintains|'
+    r'raises|cuts|lowers|lifts)\b', re.I,
 )
 RATING_CONTEXT = re.compile(
     r'\b(?:buy|sell|hold|neutral|overweight|underweight|outperform|underperform|'
     r'price target|rating|shares|stock|equal[ -]?weight|market perform|sector perform)\b', re.I,
 )
 RATING_TARGET_LIST = re.compile(r'\s*(?:,\s*(?:and\s+)?|and\s+|&\s*)', re.I)
-DIRECTIONAL_RATINGS = {'upgrade', 'upgrades', 'downgrade', 'downgrades'}
 PRICE_TARGET_ACTIONS = {'raises', 'cuts', 'lowers', 'lifts'}
 BROKER_GAP = re.compile(r'\b(?:at|by|from)\s*$', re.I)
 PREVIEW = re.compile(r'\b(?:(?:to|will|set to) report|earnings preview|'
@@ -117,6 +119,28 @@ RESULTS = re.compile(r'\b(?:reports?|announces|posts|beats?|misses|tops)\b', re.
 METRIC = re.compile(r'\b(?:earnings|financial results|operating results|eps|revenue|net loss)\b', re.I)
 COMPARISON = re.compile(r'\b(?:vs\.?|versus|beats?|misses|above|below)\b', re.I)
 ESTIMATE = re.compile(r'\b(?:consensus|est\.?|estimates?|expectations?)\b', re.I)
+ESTIMATE_VALUE = r'[-+−]?(?:US\$|CA\$|A\$|HK\$|[$€£¥]|USD\s+|EUR\s+|GBP\s+)?[-+−]?\d[\d,]*(?:\.\d+)?(?:\s?(?:[KMBT](?![a-z])|million|billion|trillion|cents?|%))?'
+ESTIMATE_PAIR = re.compile(
+    rf'\b(?:(?P<basis>adjusted|GAAP|non-GAAP)\s+)?(?P<metric>EPS|revenue|net loss)\b'
+    rf'\s*[:=]?\s*(?P<actual>{ESTIMATE_VALUE})\s+(?:vs\.?|versus|against)\s+'
+    rf'(?:(?:consensus|estimates?|expectations?)\s+(?:of\s+)?)?(?P<consensus>{ESTIMATE_VALUE})'
+    r'(?![\w%]|[.,]\d)', re.I,
+)
+PRICE_TARGET = r'(?:price\s+target|target\s+price)'
+PRICE_TARGET_GAP = re.compile(rf"\s+(?:(?:its|the)\s+)?(?:{PRICE_TARGET}|target)\s+(?:on|for)\s+", re.I)
+RATING_VALUE = r'(?:strong\s+(?:buy|sell)|buy|sell|hold|neutral|overweight|underweight|outperform|underperform|equal[ -]?weight|market perform|sector perform)'
+CHANGE_VALUES = {
+    'price_target': ESTIMATE_VALUE,
+    'rating': RATING_VALUE,
+}
+CHANGE_PATTERNS = {
+    kind: (
+        re.compile(rf'\bto\s+(?P<new>{value})(?:\s+from\s+(?P<old>{value}))?(?![\w%]|[.,]\d)', re.I),
+        re.compile(rf'\bfrom\s+(?P<old>{value})\s+to\s+(?P<new>{value})(?![\w%]|[.,]\d)', re.I),
+    )
+    for kind, value in CHANGE_VALUES.items()
+}
+FISCAL_PERIOD = re.compile(r'\b(?:Q[1-4]|FY(?:\s?20\d{2})?)\b', re.I)
 QUALIFIED_TICKER = (
     r'(?P<exchange>(?i:NASDAQ|NYSE AMERICAN|NYSE|TSXV|TSX|LSE|HKEX|ASX))'
     r'\s*:\s*(?P<ticker>[A-Z0-9][A-Z0-9.\-]{0,11})'
@@ -256,6 +280,10 @@ def adjacent(text, start, end):
     return bool(re.fullmatch(r"[\s'’:,\-]*(?:s\s*)?", text[start:end], re.I))
 
 
+def directional_passive(action):
+    return bool(DIRECTIONAL_RATING_PATTERN.fullmatch(action) and action.lower().endswith('ed'))
+
+
 def event_frames(text, spans, broker_ids):
     for acquirer, target in acquisitions(text, spans):
         yield 'acquisition', [(acquirer, 'acquirer'), (target, 'target')]
@@ -266,23 +294,31 @@ def event_frames(text, spans, broker_ids):
             continue
         if not adjacent(text, before.end, trigger.start()):
             continue
-        if broker_ids.intersection(before.evidence_ids) and adjacent(text, trigger.end(), after.start):
-            action = trigger[0].lower()
+        action = trigger[0].lower()
+        target_gap = PRICE_TARGET_GAP.fullmatch(text[trigger.end():after.start])
+        if broker_ids.intersection(before.evidence_ids) and (
+            adjacent(text, trigger.end(), after.start) or (action in PRICE_TARGET_ACTIONS and target_gap)
+        ):
             targets = [after]
-            if action in DIRECTIONAL_RATINGS:
+            directional = DIRECTIONAL_RATING_PATTERN.fullmatch(action)
+            if directional:
                 for span in spans[spans.index(after) + 1:]:
                     gap = DATELINE.sub('', text[targets[-1].end:span.start], count=1)
                     if not RATING_TARGET_LIST.fullmatch(gap):
                         break
                     targets.append(span)
             context = re.split(r'[;!?]', text[targets[-1].end:targets[-1].end + 70], maxsplit=1)[0]
-            if action in PRICE_TARGET_ACTIONS and not re.search(r'\bprice target\b', context, re.I):
+            if action in PRICE_TARGET_ACTIONS and not (target_gap or re.search(PRICE_TARGET, context, re.I)):
                 continue
-            if len(targets) > 1 or action.startswith("initiates coverage") or RATING_CONTEXT.search(context):
+            tail = text[targets[-1].end:]
+            bare_target = DATELINE.sub('', tail, count=1).strip(' .') == ''
+            coverage = re.fullmatch(COVERAGE_ACTION, action, re.I)
+            if (len(targets) > 1 or coverage or target_gap or (directional and bare_target)
+                    or RATING_CONTEXT.search(context)):
                 yield 'analyst_action', [(before, 'broker')] + [
                     (target, 'affected_issuer') for target in targets
                 ]
-        elif (trigger[0].lower() in {'upgraded', 'downgraded'}
+        elif (directional_passive(trigger[0])
               and broker_ids.intersection(after.evidence_ids)
               and BROKER_GAP.search(text[trigger.end():after.start])):
             yield 'analyst_action', [(after, 'broker'), (before, 'affected_issuer')]
@@ -303,6 +339,9 @@ def event_frames(text, spans, broker_ids):
     if PREVIEW.search(following[:75]) and METRIC.search(following[:130]):
         yield 'earnings_preview', [(issuer, 'issuer')]
         return
+    if ESTIMATE_PAIR.search(issuer_clause):
+        yield 'earnings_estimate_comparison', [(issuer, 'issuer')]
+        return
     trigger = RESULTS.search(following[:50])
     if trigger and METRIC.search(following[:130]):
         event = ('earnings_estimate_comparison'
@@ -319,7 +358,9 @@ def headline_spans(headline, index):
 def extract(row, index, broker_ids):
     headline = row['headline']
     title_spans = headline_spans(headline, index)
-    events = list(event_frames(headline, title_spans, broker_ids))
+    publisher = PUBLISHER_SUFFIX.search(headline)
+    event_text = headline[:publisher.start()] if publisher else headline
+    events = list(event_frames(event_text, title_spans, broker_ids))
     # Keep lead evidence distinct from headline offsets and from verified identity.
     body = (row.get('body') or '')[:1600]
     def mention(text, span):
@@ -337,6 +378,33 @@ def extract(row, index, broker_ids):
                                        for span, role in roles])
                 for frame, roles in events],
     )
+    for event in result['events']:
+        if event['frame'] == 'analyst_action':
+            roles = event['roles']
+            start = min(role['end'] for role in roles)
+            end = max(role['end'] for role in roles)
+            context = event_text[start:end] + re.split(r'[;!?]', event_text[end:], maxsplit=1)[0]
+            for kind, patterns in CHANGE_PATTERNS.items():
+                if kind == 'price_target' and not (
+                    re.search(PRICE_TARGET, context, re.I) or PRICE_TARGET_GAP.search(context)
+                ):
+                    continue
+                match = patterns[1].search(context) or patterns[0].search(context)
+                if match:
+                    event[kind] = match.groupdict()
+        if event['frame'] != 'earnings_estimate_comparison':
+            continue
+        issuer_end = event['roles'][0]['end']
+        clause_end = title_spans[1].start if len(title_spans) > 1 else len(headline)
+        clause = headline[issuer_end:clause_end]
+        period = FISCAL_PERIOD.search(clause)
+        comparisons = []
+        for match in ESTIMATE_PAIR.finditer(clause):
+            comparison = match.groupdict()
+            comparison['fiscal_period'] = period[0] if period else None
+            comparisons.append(comparison)
+        if comparisons:
+            event['comparisons'] = comparisons
     dateline = wire_dateline(body)
     if dateline:
         result['body_dateline_candidate'] = dateline
